@@ -1,0 +1,43 @@
+# Quadlet unit for hecate-mpong-bot.
+#
+# Runs on Hecate INFRASTRUCTURE nodes (BEAM cluster, dedicated relay
+# boxes, cooperative-contributed service nodes). NOT on user laptops.
+#
+# Lives in hecate-gitops/system/ and is symlinked into
+# /etc/containers/systemd/ by the reconciler. Managed by the
+# system-wide systemd, not a user instance.
+#
+# One container per bot IDENTITY — multiple containers on the same
+# host yield multiple distinct paddles available across the mesh.
+
+[Unit]
+Description=Hecate service: hecate-mpong-bot
+After=network-online.target macula-station.service
+Wants=network-online.target
+Requires=macula-station.service
+
+[Container]
+ContainerName=hecate-mpong-bot
+Image=ghcr.io/hecate-services/hecate-mpong-bot:latest
+AutoUpdate=registry
+
+# Realm-issued service-principal cert (read-only). Provisioned via
+# hecate-realm at install time, not derived from a human user.
+Volume=/etc/hecate/secrets/hecate-mpong-bot:/etc/hecate/secrets:ro,Z
+
+# Per-bot state (currently only the in-memory engine + future event
+# store for match history). Bulk drive on the beam nodes (/bulk0).
+Volume=/bulk0/hecate/hecate-mpong-bot:/var/lib/hecate-mpong-bot:Z
+
+# Local macula-station socket (the SDK speaks to this).
+Volume=/run/macula:/run/macula:Z
+
+# No exposed ports — /health is on loopback inside the container,
+# Podman's HEALTHCHECK reaches it via the container's own network.
+
+[Service]
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target default.target

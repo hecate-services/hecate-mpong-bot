@@ -1,0 +1,35 @@
+{
+  "name": "hecate-mpong-bot",
+  "display_name": "Mpong Bot",
+  "version": "0.1.0",
+  "description": "Realm-bound autonomous Pong-over-mesh player. One container per bot identity.",
+  "service_type": "container_daemon",
+  "tenancy": "realm",
+  "runs_on": "infrastructure_node",
+  "callback_module": "hecate_mpong_bot_service",
+  "image": "ghcr.io/hecate-services/hecate-mpong-bot",
+  "repository": "https://codeberg.org/hecate-services/hecate-mpong-bot",
+  "license": "Apache-2.0",
+  "depends_on": [
+    "macula-station",
+    "hecate-realm",
+    "hecate-om"
+  ],
+  "capabilities": [
+    "hecate-mpong-bot.fill_seat",
+    "hecate-mpong-bot.list_active_games",
+    "hecate-mpong-bot.host_game",
+    "hecate-mpong-bot.withdraw"
+  ],
+  "ports": {
+    "health": 8470
+  },
+  "volumes": {
+    "secrets":        "/etc/hecate/secrets/hecate-mpong-bot",
+    "state":          "/var/lib/hecate-mpong-bot",
+    "station_socket": "/run/macula"
+  },
+  "min_realm_version":   "0.6.0",
+  "min_station_version": "0.1.0",
+  "min_om_version":      "0.1.0"
+}

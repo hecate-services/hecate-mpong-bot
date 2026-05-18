@@ -1,0 +1,22 @@
+{application, hecate_mpong_bot, [
+    {description, "Realm-bound autonomous Pong-over-mesh bot"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {mod, {hecate_mpong_bot_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        cowboy,
+        hecate_om
+        %% Slice apps appear here as they're extracted from
+        %% hecate-daemon's guide_mpong_game_lifecycle. Each slice
+        %% boots its own supervisor; this app's sup only owns
+        %% service-wide infrastructure (HTTP + mesh RPC).
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [
+        {"Codeberg", "https://codeberg.org/hecate-services/hecate-mpong-bot"}
+    ]}
+]}.
