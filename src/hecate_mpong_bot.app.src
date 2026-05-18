@@ -7,11 +7,12 @@
         kernel,
         stdlib,
         cowboy,
-        hecate_om
-        %% Slice apps appear here as they're extracted from
-        %% hecate-daemon's guide_mpong_game_lifecycle. Each slice
-        %% boots its own supervisor; this app's sup only owns
-        %% service-wide infrastructure (HTTP + mesh RPC).
+        hecate_om,
+        guide_mpong_game_lifecycle
+        %% More slice apps land here as they're extracted from
+        %% hecate-daemon. Each slice boots its own supervisor;
+        %% this app's sup only owns service-wide infrastructure
+        %% (HTTP + mesh RPC).
     ]},
     {env, []},
     {modules, []},

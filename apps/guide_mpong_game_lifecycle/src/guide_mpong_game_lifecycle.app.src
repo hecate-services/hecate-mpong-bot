@@ -1,0 +1,18 @@
+{application, guide_mpong_game_lifecycle, [
+    {description, "Mpong game lifecycle slices (extracted from hecate-daemon)"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {mod, {guide_mpong_game_lifecycle_app, []}},
+    %% Today only `auto_host_demo_loop' has a process tree; the
+    %% other two slices (advertise_game, broadcast_game_state) are
+    %% stateless library modules called by it. No reckon-db /
+    %% evoq deps yet — they land when the host_mpong_game /
+    %% run_game_engine slices are extracted.
+    {applications, [kernel, stdlib]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [
+        {"Codeberg", "https://codeberg.org/hecate-services/hecate-mpong-bot"}
+    ]}
+]}.

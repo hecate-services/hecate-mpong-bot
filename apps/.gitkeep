@@ -1,8 +1,0 @@
-Vertical slices land here, one per capability, when extracted from
-hecate-daemon's `apps/guide_mpong_game_lifecycle/src/*'. See README
-"Status of the extraction" for the full list.
-
-Each slice is its own OTP app with its own supervisor under `src/`,
-matching the daemon's existing layout. The service-level supervisor
-(`hecate_mpong_bot_sup`) only owns service-wide infrastructure
-(HTTP + mesh RPC); it does NOT supervise slice workers directly.
