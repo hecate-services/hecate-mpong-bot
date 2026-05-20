@@ -6,7 +6,19 @@
 #----------------------------------------------------------------------
 FROM docker.io/erlang:27-alpine AS builder
 
-RUN apk add --no-cache git build-base
+RUN apk add --no-cache \
+    git curl bash \
+    build-base cmake \
+    perl linux-headers
+
+# Rust via rustup (hecate_om transitively pulls macula_quic, a Rust NIF;
+# Alpine's rustc is too old for its deps). When reckon_db slices land
+# this is needed for reckon_db 2.x NIFs too.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+# musl-targeted rustup defaults to crt-static; cdylib NIFs need it off.
+ENV RUSTFLAGS="-C target-feature=-crt-static"
 
 WORKDIR /build
 COPY rebar.config ./
