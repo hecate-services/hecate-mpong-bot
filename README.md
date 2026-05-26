@@ -5,7 +5,7 @@ service per the [Hecate four-tier model][tier-model], extracted from
 the Pong-over-mesh autonomy that currently lives inside
 `hecate-daemon`'s `guide_mpong_game_lifecycle/*`.
 
-[tier-model]: https://codeberg.org/hecate-social/hecate-agents/src/branch/main/philosophy/HECATE_TIER_MODEL.md
+[tier-model]: https://codeberg.org/hecate-social/hecate-corpus/src/branch/main/philosophy/HECATE_TIER_MODEL.md
 
 ## What this service is
 
