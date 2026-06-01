@@ -36,14 +36,17 @@ and the daemon is now mpong-free:
   compiles clean.
 
 **Build-verified:** `rebar3 compile` + `rebar3 as prod release` both green.
-**NOT yet runtime-verified** — the bot still needs a service-principal cert
-for its mesh identity. NOTE (2026-06-01): the realm side is NOT a TODO — the
-**deployed** realm is `macula-realm` (macula.io), and it already issues
-service-principal certs at `POST /api/v1/services/provision`
-(`ServicePrincipalIssuanceController`, backed by the realm CA). The remaining
-work is wiring the bot to *obtain + use* a cert from that endpoint, not
-building realm capability. (`hecate-realm` is the white-label variant and is
-not deployed anywhere.)
+**Identity wired (2026-06-01):** `config/sys.config` now has the correct
+`hecate_om` mesh config (io.macula realm tag + Leuven district `station_seeds`
++ `service_cert_path`), so the bot connects + publishes exactly like the
+deployed `hecate-parksim`. The service-principal cert is minted by
+`scripts/provision-service-cert.sh` against the **deployed** realm
+`macula-realm` (`POST /api/v1/services/provision`) — but it is NOT required to
+publish in v1 (the mesh doesn't yet verify realm membership; `hecate_om` holds
+the cert for the v2 swap-in). (`hecate-realm` is the white-label variant, not
+deployed.)
+**Still NOT runtime-verified** — needs a boot against a reachable station
+(prod-only; host00 can't QUIC the Hetzner stations), which is the next step.
 
 **Phase 2** = build the real federated seat negotiation on this clean base.
 
@@ -214,15 +217,22 @@ peering. See feedback memory `feedback_macula_publish_takes_terms`.
 
 These aren't in this repo but block the bot's first prod run:
 
-1. **Cert wiring** (NOT realm capability — that already exists). The
-   deployed `macula-realm` already issues service-principal certs at
-   `POST /api/v1/services/provision` (`ServicePrincipalIssuanceController`,
-   realm-CA-backed; sibling of the headless-node `cluster/provision` flow,
-   see memory `project_realm_identity_rethink`). Remaining work is bot-side:
-   generate a keypair, POST it (with the host node's refresh token) to get a
-   signed `service-cert.pem`, and load it into `hecate_om`'s macula client as
-   the bot's identity. Deploy on an infra node that already holds a node-cert
-   + refresh token.
+1. **Cert wiring — DONE (2026-06-01).** `hecate_om_identity` already loads the
+   service-principal cert (`/etc/hecate/secrets/service-cert.pem`) and connects
+   the macula pool; it does NOT require the cert to connect/publish in v1 (the
+   mesh doesn't yet verify realm membership — the cert is held for the v2
+   swap-in). The bot-side wiring is now in place:
+   - `config/sys.config` `hecate_om` section: the io.macula realm **tag**
+     (64-hex), the Leuven district `station_seeds` (parksim's proven set), and
+     `service_cert_path`. (The previous config was broken — missing realm tag +
+     seeds, so it could never connect.)
+   - `scripts/provision-service-cert.sh` mints the cert at deploy time:
+     generate an Ed25519 keypair locally, POST the public key (+ the host
+     node's refresh token) to `macula-realm`'s `POST /api/v1/services/provision`
+     (`ServicePrincipalIssuanceController`), write the returned `service-cert.pem`
+     to `/etc/hecate/secrets/hecate-mpong-bot/`. Mount it ro at
+     `/etc/hecate/secrets/service-cert.pem` in the container.
+   Deploy on an infra node that already holds its node-cert + refresh token.
 2. **Gitops landing** — once the bot can publish, add the Quadlet to
    `hecate-social/hecate-gitops/` for one canary beam node.
 3. **Daemon-side auto-host cutover** — when the bot is verified on
