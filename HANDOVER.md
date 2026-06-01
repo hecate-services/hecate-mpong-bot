@@ -1,6 +1,6 @@
 # HANDOVER — hecate-mpong-bot
 
-**Last updated:** 2026-06-01 (mesh-connect blocker RESOLVED + deployed)
+**Last updated:** 2026-06-01 (mesh-connect blocker RESOLVED + deployed; deps now from hex)
 **Remote:** `codeberg.org/hecate-services/hecate-mpong-bot` (push-mirrored to GitHub via `sync_on_commit`).
 
 This file exists so a fresh session after reboot can pick up the
@@ -106,14 +106,23 @@ Steps done:
    `hecate_om_identity:macula_client()` returns a live pool (publish-ok is only
    possible with a connected pool). The realm consumes the byte-identical wire
    the daemon already publishes, so `/demo/mpong` sees the bot.
+5. **hecate_om 0.3.1 + macula 4.8.0 published to hex; `rebar.config` flipped off
+   the git pins → `{hecate_om, "~> 0.3.1"}` + `{macula, "~> 4.8"}`** (commit
+   `4822fad`). hecate_om 0.3.1 was tagged `v0.3.1` (annotated, on the published
+   commit `673e055`) + published with a `scripts/publish-to-hex.sh` helper; a
+   dialyzer-exclude fix for the debug_info-less macula/reckon-db deps landed in
+   it (`673e055`). Rebuilt container embeds `hecate_om-0.3.1` + `macula-4.8.0`
+   **from hex**; redeployed `mpong-bot` on beam01 (image tag `:hexdeps`, aliased
+   `:latest`) — re-verified connect + publish (`tick=425 result=ok`, zero
+   `mesh_unavailable`). Old beam01 image tags (`fixed-noclient` + dangling)
+   pruned.
 
 ### Follow-up still owed (next session, small)
 
-- **Dep PINNED (done):** `rebar.config` now pins `{hecate_om, {git, ..., {ref,
-  "c1dc348..."}}}` (0.3.1) — a future `hecate_om` `main` commit can't silently
-  regress the connect fix. `rebar.lock` stays gitignored; the ref pin is the
-  source of truth. Move to `{hecate_om, "~> 0.3.1"}` once 0.3.1 is published to
-  hex, then drop the git ref.
+- **Deps from hex (done):** `rebar.config` now uses `{hecate_om, "~> 0.3.1"}` +
+  `{macula, "~> 4.8"}` — both published to hex, git pins dropped (commit
+  `4822fad`). `rebar.lock` is gitignored but `COPY`d into the container build;
+  a fresh build re-resolves from hex.
 - **Stale comments** in `config/sys.config` (the `hecate_om` block) +
   `scripts/provision-service-cert.sh` (header) still say "v1 connect/publish does
   not require the cert" — that is now TRUE (0.3.1), so the comments are fine, but
