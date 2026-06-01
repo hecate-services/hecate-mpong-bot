@@ -7,12 +7,15 @@
         kernel,
         stdlib,
         cowboy,
+        reckon_db,
+        evoq,
+        reckon_evoq,
         hecate_om,
-        guide_mpong_game_lifecycle
-        %% More slice apps land here as they're extracted from
-        %% hecate-daemon. Each slice boots its own supervisor;
-        %% this app's sup only owns service-wide infrastructure
-        %% (HTTP + mesh RPC).
+        %% Slice apps boot before this one so the projections have
+        %% registered and the store exists by the time start/1 runs.
+        guide_mpong_game_lifecycle,
+        project_mpong_games,
+        query_mpong_games
     ]},
     {env, []},
     {modules, []},

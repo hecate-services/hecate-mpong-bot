@@ -8,7 +8,14 @@
 -module(hecate_mpong_bot_service).
 -behaviour(hecate_om_service).
 
+-include_lib("reckon_db/include/reckon_db.hrl").
+
 -export([info/0, start/1, stop/1, health/0, capabilities/0, identity_spec/0]).
+-export([store_id/0, data_dir/0]).
+
+%% The single reckon-db store the mpong game lifecycle event-sources into.
+%% The moved CMD/PRJ slices all dispatch/project against this atom.
+-define(STORE_ID, mpong_store).
 
 info() ->
     #{
@@ -19,7 +26,45 @@ info() ->
     }.
 
 start(_Opts) ->
-    hecate_mpong_bot_sup:start_link().
+    %% Mirror the hecate-parksim service pattern: stand up the root sup,
+    %% create the local reckon-db store, then bridge it to evoq
+    %% (catch-up + live $all) so the moved projections/handlers work.
+    %% The CMD app's boot-time champion register + auto-host loop retry
+    %% past this brief window, so start order is not load-bearing.
+    {ok, SupPid} = hecate_mpong_bot_sup:start_link(),
+    ok = ensure_store(),
+    ok = ensure_subscription(),
+    {ok, SupPid}.
+
+%% @doc The mpong event store id.
+-spec store_id() -> atom().
+store_id() -> ?STORE_ID.
+
+%% @doc Filesystem root for the store's on-disk state.
+-spec data_dir() -> string().
+data_dir() ->
+    case os:getenv("HECATE_DATA_DIR") of
+        false -> "/var/lib/hecate-mpong-bot";
+        ""    -> "/var/lib/hecate-mpong-bot";
+        Dir   -> Dir
+    end.
+
+ensure_store() ->
+    Config = #store_config{store_id = store_id(),
+                           data_dir = data_dir(),
+                           mode     = single},
+    case reckon_db_sup:start_store(Config) of
+        {ok, _Pid}                    -> ok;
+        {error, {already_started, _}} -> ok;
+        {error, Reason}               -> error({store_start_failed, Reason})
+    end.
+
+ensure_subscription() ->
+    case evoq_store_subscription:start_link(store_id()) of
+        {ok, _Pid}                    -> ok;
+        {error, {already_started, _}} -> ok;
+        {error, Reason}               -> error({store_subscription_failed, Reason})
+    end.
 
 stop(_State) ->
     ok.

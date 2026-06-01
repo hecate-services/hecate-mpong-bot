@@ -1,19 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @doc Top-level supervisor for MPong game lifecycle in the
-%%% hecate-mpong-bot service.
-%%%
-%%% Slimmed-down vs the original in hecate-daemon — today this only
-%%% supervises `auto_host_demo_loop_sup' (when enabled). The
-%%% `run_game_engine_sup', `listen_game_state_sup', and
-%%% `mpong_lobby_seeker' children from the daemon's version come
-%%% back as their slices land. Until then, `auto_host_demo_loop'
-%%% will start successfully but its `host_one_match' will crash
-%%% with `undef' on `run_game_engine_sup:start_engine/1' — the bot
-%%% logs the failure and ticks again.
-%%%
-%%% Auto-host is enabled via the `{hecate_mpong_bot, mpong_auto_host}'
-%%% app env or the OS env `HECATE_MPONG_AUTO_HOST=true'. The OS env
-%%% name is held over from the daemon for operator continuity.
+%%% @doc Top-level supervisor for MPong game lifecycle.
 %%% @end
 %%%-------------------------------------------------------------------
 -module(guide_mpong_game_lifecycle_sup).
@@ -26,9 +12,23 @@ start_link() ->
 
 init([]) ->
     SupFlags = #{strategy => one_for_one, intensity => 10, period => 10},
-    Children = auto_host_demo_loop_children(),
+    %% Phase 1 (self-hosting bot): the engine sup + the auto-host loop.
+    %% listen_game_state_sup + mpong_lobby_seeker (the federated-join /
+    %% seat-negotiation path) are deferred to Phase 2.
+    Base = [
+        #{id => run_game_engine_sup,
+          start => {run_game_engine_sup, start_link, []},
+          restart => permanent,
+          type => supervisor}
+    ],
+    Children = Base ++ auto_host_demo_loop_children(),
     {ok, {SupFlags, Children}}.
 
+%% Only run the public-demo auto-host loop when explicitly enabled via
+%% application env (`{hecate, mpong_auto_host}') OR the OS env
+%% `HECATE_MPONG_AUTO_HOST=true' (set in `~/.hecate/gitops/system/
+%% hecate-daemon.env' on beam-cluster boxes designated for the demo).
+%% Default off — user-installed daemons must never spam mpong matches.
 auto_host_demo_loop_children() ->
     case auto_host_enabled() of
         true ->

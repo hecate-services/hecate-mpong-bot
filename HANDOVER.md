@@ -11,6 +11,38 @@ and commit.
 
 ---
 
+## ⚠️ STATUS UPDATE — 2026-06-01: PHASE 1 COMPLETE (rip + move)
+
+The "what's missing" checklist below is **DONE** — superseded by a decisive
+Phase 1 rip. The full live self-hosting CQRS stack was moved from hecate-daemon
+and the daemon is now mpong-free:
+
+- **Moved + wired:** `guide_mpong_game_lifecycle` (host/join/start/end +
+  register_champion + engine `mpong_game_engine/ball/collision/obstacles/ai` +
+  advertise/broadcast + auto_host), `project_mpong_games` (PRJ),
+  `query_mpong_games` (QRY: list/get/stream/champion). Event-sourced into a
+  service-local `mpong_store` created in `hecate_mpong_bot_service:start/1`
+  (parksim pattern). Thin `hecate_mesh` + `hecate_topics` shims under `src/`
+  publish the byte-identical `mpong/game_advertised_v1` + `state_broadcast_v1`.
+- **Deleted (cruft):** the `*_mpong_*` API duplicate family, `mpong_paddle`,
+  `poll_mpong_game`.
+- **Deferred → Phase 2 (NOT moved; rebuild from daemon git history):** the
+  federated seat-negotiation path — `mpong_lobby_server`/`seeker`,
+  `request_seat`/`reserve_seat`/`deny_seat`, `seek_lobby`, `listen_game_state`,
+  `handle_paddle_input`, `eliminate_player`, `leave_game`, `mpong_arena`,
+  `discover_mpong_lobbies`.
+- **Daemon rip:** the 3 mpong apps + their wiring (rebar relx, `?STORES`
+  mpong_store, `?HECATE_APPS`, the `[mpong-trace]` block) removed; daemon
+  compiles clean.
+
+**Build-verified:** `rebar3 compile` + `rebar3 as prod release` both green.
+**NOT yet runtime-verified** — still blocked on the service-principal cert
+(realm TODO below); a bot can't get a mesh identity without it.
+
+**Phase 2** = build the real federated seat negotiation on this clean base.
+
+---
+
 ## TL;DR — where we are
 
 - The mpong-over-mesh demo at `https://macula.io/demo/mpong` works
