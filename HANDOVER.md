@@ -1,7 +1,6 @@
 # HANDOVER — hecate-mpong-bot
 
-**Last updated:** 2026-05-18
-**Last commit on `main`:** `1d1f9ad extract: auto_host_demo_loop + advertise_game + broadcast_game_state`
+**Last updated:** 2026-06-01 (mesh-connect blocker RESOLVED + deployed)
 **Remote:** `codeberg.org/hecate-services/hecate-mpong-bot` (push-mirrored to GitHub via `sync_on_commit`).
 
 This file exists so a fresh session after reboot can pick up the
@@ -36,74 +35,101 @@ and the daemon is now mpong-free:
   compiles clean.
 
 **Build-verified:** `rebar3 compile` + `rebar3 as prod release` both green.
-**Identity wired (2026-06-01):** `config/sys.config` now has the correct
-`hecate_om` mesh config (io.macula realm tag + Leuven district `station_seeds`
-+ `service_cert_path`), so the bot connects + publishes exactly like the
-deployed `hecate-parksim`. The service-principal cert is minted by
-`scripts/provision-service-cert.sh` against the **deployed** realm
-`macula-realm` (`POST /api/v1/services/provision`) — but it is NOT required to
-publish in v1 (the mesh doesn't yet verify realm membership; `hecate_om` holds
-the cert for the v2 swap-in). (`hecate-realm` is the white-label variant, not
-deployed.)
-**Runtime: canary deployed (beam01) — boots + event-sources + auto-hosts, but
-the macula pool will not connect. See the OPEN BLOCKER below.**
+**Identity wired (2026-06-01):** `config/sys.config` has the `hecate_om` mesh
+config (io.macula realm tag + Leuven district `station_seeds`). The cert is
+loaded-when-present but **NOT required to connect** — v1 connect/publish uses an
+SDK-auto-generated ephemeral peering identity (the daemon's proven path). The
+cert is held for the v2 realm-membership swap-in only.
+
+**Runtime: canary on beam01 CONNECTS + publishes to the mesh (verified
+2026-06-01).** `[advertise_game] Published ... mpong/game_advertised_v1: ok` and
+`[broadcast_game_state] tick=N result=ok` stream continuously (no
+`mesh_unavailable`). See the RESOLVED blocker below for the real root cause.
 
 **Phase 2** = build the real federated seat negotiation on this clean base.
 
 ---
 
-## ⛔ OPEN BLOCKER (2026-06-01): macula pool never connects (`no_client`)
+## ✅ RESOLVED + DEPLOYED (2026-06-01): the bot now connects + publishes
 
-A canary was deployed to **beam01** (`docker run --network host
--e HECATE_MPONG_AUTO_HOST=true ghcr.io/hecate-services/hecate-mpong-bot:latest`,
-image transferred via `save | ssh docker load` — the ghcr package is private,
-see below). It runs, but **`hecate_om:macula_client()` stays `{error,no_client}`**,
-so every publish returns `{error, mesh_unavailable}` and the realm's
-`MaculaRealm.Mpong.games()` stays `0`.
+**Root cause: a bug in `hecate_om` 0.3.0 gated the mesh connect on service-cert
+presence. The bot had no cert, so `attach_client/1` short-circuited and never
+called `macula:connect`. The fix already existed in `hecate_om` git history but
+had never been pushed to Codeberg, so the bot's `{branch,main}` dep kept pulling
+the broken 0.3.0.**
 
-**Everything else works** (verified in the logs):
-- Boots fully: crypto, macula SDK, `mpong_store` reckon_db store creates +
-  leader-elects + `$all` subscription, evoq catch-up, "Application started."
-- Auto-host runs: hosts a match, the engine ticks (`tick=N` climbing),
-  `advertise_game:announce` + `broadcast_game_state:broadcast` fire on schedule.
+The broken `hecate_om_identity:attach_client/1` (0.3.0, `bc6b66d3`):
 
-**Four real bugs were found + fixed getting this far** (all committed):
+```erlang
+attach_client(undefined) ->        %% <-- bot lands HERE (no cert file)
+    undefined;                     %% returns WITHOUT calling macula:connect
+attach_client(_Cert) ->
+    macula:connect(Seeds, #{})     %% NB: Opts=#{} — the cert is NOT passed!
+```
+
+The cert was a **spurious gate**: it is never passed to `macula:connect`
+(`Opts=#{}`), only loaded + held for `service_cert/0` (v2). So requiring it to
+connect kept every cert-less service dark. The bot had no cert → `load_cert()`
+enoent → `Cert=undefined` → `attach_client(undefined)` → `undefined` → connect
+never runs → **zero peering attempts** → `no_client` → every publish
+`mesh_unavailable`.
+
+**The "parksim is byte-identical and connects fine" reasoning was a red
+herring.** The *deployed* parksim ALSO has no cert (`/etc/hecate/secrets/` empty
+in its running container — verified). parksim is "live" via dist-Erlang + the
+gRPC gateway federation, NOT the macula mesh — so its connect path was never
+exercised. The earlier "macula 4.8.x internals / `84f78b` vs `35bfc6c8` commit"
+lead was a **dead end** — connect was simply never reached. Do NOT re-chase it.
+
+### Fix applied (verified, deployed)
+
+The fix is `hecate_om` **0.3.1** (`c1dc348`), which was already committed locally
+but unpushed:
+- `attach_client/0` connects on **seeds**, not cert presence (cert decoupled).
+- Connect is **deferred off the init path + retried** (`self() ! connect`,
+  `?RECONNECT_MS`), fixing a boot race where hecate_om started before the macula
+  SDK app was up. Re-attaches if the pool later dies (monitors it).
+- Empty opts → the SDK auto-generates an ephemeral peering identity (the
+  daemon's proven path). Optional `identity_key_path` env gives a stable on-disk
+  keypair when set (the bot does not set it → ephemeral). Identity is for
+  peering, not authorization.
+
+Steps done:
+1. Pushed `hecate_om` 0.3.1 (`c1dc348`) to **Codeberg** `origin/main` (canonical;
+   the local `main` had wrongly been tracking the GitHub mirror).
+2. Bumped this repo's `rebar.lock` to `c1dc348`; `rebar3 as prod release` green.
+3. Rebuilt the container, `docker save | ssh beam01 docker load`, redeployed the
+   `mpong-bot` canary with `docker run --network host -e HECATE_MPONG_AUTO_HOST=true`
+   — **no cert mount needed.**
+4. Verified: `[advertise_game] Published ... mpong/game_advertised_v1: ok` +
+   `[broadcast_game_state] tick=N result=ok` stream continuously;
+   `hecate_om_identity:macula_client()` returns a live pool (publish-ok is only
+   possible with a connected pool). The realm consumes the byte-identical wire
+   the daemon already publishes, so `/demo/mpong` sees the bot.
+
+### Follow-up still owed (next session, small)
+
+- **Dep is `{hecate_om, {branch, main}}` and `rebar.lock` is GITIGNORED.** The
+  fix rides on Codeberg `hecate_om` `main` = `c1dc348` (pushed). A fresh build
+  re-resolves `main` and gets it. For reproducibility, consider pinning
+  `{ref, "c1dc348..."}` in `rebar.config` (or `{hecate_om, "~> 0.3.1"}` once
+  0.3.1 is on hex) so a future `main` commit can't silently regress this.
+- **Stale comments** in `config/sys.config` (the `hecate_om` block) +
+  `scripts/provision-service-cert.sh` (header) still say "v1 connect/publish does
+  not require the cert" — that is now TRUE (0.3.1), so the comments are fine, but
+  the `service_cert_path` line in sys.config is unused in v1; leave it for v2.
+- **Gitops landing** — add the Quadlet to `hecate-social/hecate-gitops/` for a
+  permanent canary node (the current canary is a manual `docker run`).
+- **Daemon-side auto-host cutover** — once happy, flip `HECATE_MPONG_AUTO_HOST=false`
+  on the daemons node-by-node (see "Open ops items" below).
+
+**Four real build/config bugs were also found + fixed earlier** (all committed,
+all still valid):
 1. runtime base `alpine:3.20` → `3.22` (crypto NIF `EVP_MD_CTX_get_size_ex`).
 2. missing `{evoq, [...]}` `reckon_evoq_adapter` config (`not_configured`).
 3. `{mpong_auto_host, false}` in sys.config shadowed the OS-env override.
 4. macula pinned to git tag `v4.8.0` (not a commit SHA — a clean container
    can't fetch arbitrary non-HEAD SHAs from codeberg).
-
-**The connect failure itself — every obvious cause RULED OUT:**
-
-| Suspect | Verdict |
-|---|---|
-| macula version | ruled out — bot confirmed on **4.8.0** (boot log `macula-4.8.0`), still no connect |
-| `hecate_om` connect code | ruled out — `hecate_om_identity.erl` is **byte-identical** between the bot (main `bc6b66d3`) and the deployed parksim (older `d77353d9`) |
-| stations down / unreachable | ruled out — parksim is live (ClankerCab 4/4 operators online); all 4 seed stations resolve + answer :4433 from beam01 (centrum/gasthuisberg = Hetzner, heverlee/korbeek-lo = Linode, IPv6) |
-| network / IPv6 from the host | same host-network stack as parksim, which connects fine |
-| config (seeds/realm) | verified present + correct (parksim's exact shape) |
-
-**Symptom:** `macula:connect(Seeds, #{})` (called by `hecate_om_identity:attach_client/0`)
-returns immediately with an error (→ `undefined` → `no_client`), producing
-**ZERO peering attempts** in the log. The SDK's peering sups start, then nothing.
-`hecate_om_identity` retries every 5s; the gen_server stays responsive (so it's
-not blocking inside connect — it's a fast error return).
-
-**One untried lead:** parksim's EXACT macula commit is `84f78b3eb…`; the bot
-pins the `v4.8.0` TAG = `35bfc6c8…` (current main HEAD). These are different
-4.8.x commits. There is a slim chance `84f78b` connects where `35bfc6c8`
-doesn't — but `84f78b` is neither a tag nor HEAD, so a clean container build
-can't fetch it without extra git plumbing (full clone / a temporary branch).
-
-**Next-session starting point** (needs someone who knows macula 4.8.x's
-`connect/2` internals): instrument `hecate_om_identity:attach_client/0` to log
-the raw `macula:connect/2` return + reason, and/or call `macula:connect(Seeds,
-#{})` directly in a `… eval` on the bot (NOTE: use `io:format/1,2`, NOT
-`io:format(user, …)` — the latter isn't captured by the release `eval`). Compare
-against a working parksim node's connect path. The question is purely *"why does
-`macula:connect` error-without-peering for this service when an otherwise
-identical setup in parksim succeeds."*
 
 **Ops note — ghcr package is PRIVATE.** `ghcr.io/hecate-services/hecate-mpong-bot`
 is private and **cannot be flipped to public via API** (GitHub has no REST
