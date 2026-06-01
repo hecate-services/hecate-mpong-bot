@@ -45,10 +45,72 @@ deployed `hecate-parksim`. The service-principal cert is minted by
 publish in v1 (the mesh doesn't yet verify realm membership; `hecate_om` holds
 the cert for the v2 swap-in). (`hecate-realm` is the white-label variant, not
 deployed.)
-**Still NOT runtime-verified** — needs a boot against a reachable station
-(prod-only; host00 can't QUIC the Hetzner stations), which is the next step.
+**Runtime: canary deployed (beam01) — boots + event-sources + auto-hosts, but
+the macula pool will not connect. See the OPEN BLOCKER below.**
 
 **Phase 2** = build the real federated seat negotiation on this clean base.
+
+---
+
+## ⛔ OPEN BLOCKER (2026-06-01): macula pool never connects (`no_client`)
+
+A canary was deployed to **beam01** (`docker run --network host
+-e HECATE_MPONG_AUTO_HOST=true ghcr.io/hecate-services/hecate-mpong-bot:latest`,
+image transferred via `save | ssh docker load` — the ghcr package is private,
+see below). It runs, but **`hecate_om:macula_client()` stays `{error,no_client}`**,
+so every publish returns `{error, mesh_unavailable}` and the realm's
+`MaculaRealm.Mpong.games()` stays `0`.
+
+**Everything else works** (verified in the logs):
+- Boots fully: crypto, macula SDK, `mpong_store` reckon_db store creates +
+  leader-elects + `$all` subscription, evoq catch-up, "Application started."
+- Auto-host runs: hosts a match, the engine ticks (`tick=N` climbing),
+  `advertise_game:announce` + `broadcast_game_state:broadcast` fire on schedule.
+
+**Four real bugs were found + fixed getting this far** (all committed):
+1. runtime base `alpine:3.20` → `3.22` (crypto NIF `EVP_MD_CTX_get_size_ex`).
+2. missing `{evoq, [...]}` `reckon_evoq_adapter` config (`not_configured`).
+3. `{mpong_auto_host, false}` in sys.config shadowed the OS-env override.
+4. macula pinned to git tag `v4.8.0` (not a commit SHA — a clean container
+   can't fetch arbitrary non-HEAD SHAs from codeberg).
+
+**The connect failure itself — every obvious cause RULED OUT:**
+
+| Suspect | Verdict |
+|---|---|
+| macula version | ruled out — bot confirmed on **4.8.0** (boot log `macula-4.8.0`), still no connect |
+| `hecate_om` connect code | ruled out — `hecate_om_identity.erl` is **byte-identical** between the bot (main `bc6b66d3`) and the deployed parksim (older `d77353d9`) |
+| stations down / unreachable | ruled out — parksim is live (ClankerCab 4/4 operators online); all 4 seed stations resolve + answer :4433 from beam01 (centrum/gasthuisberg = Hetzner, heverlee/korbeek-lo = Linode, IPv6) |
+| network / IPv6 from the host | same host-network stack as parksim, which connects fine |
+| config (seeds/realm) | verified present + correct (parksim's exact shape) |
+
+**Symptom:** `macula:connect(Seeds, #{})` (called by `hecate_om_identity:attach_client/0`)
+returns immediately with an error (→ `undefined` → `no_client`), producing
+**ZERO peering attempts** in the log. The SDK's peering sups start, then nothing.
+`hecate_om_identity` retries every 5s; the gen_server stays responsive (so it's
+not blocking inside connect — it's a fast error return).
+
+**One untried lead:** parksim's EXACT macula commit is `84f78b3eb…`; the bot
+pins the `v4.8.0` TAG = `35bfc6c8…` (current main HEAD). These are different
+4.8.x commits. There is a slim chance `84f78b` connects where `35bfc6c8`
+doesn't — but `84f78b` is neither a tag nor HEAD, so a clean container build
+can't fetch it without extra git plumbing (full clone / a temporary branch).
+
+**Next-session starting point** (needs someone who knows macula 4.8.x's
+`connect/2` internals): instrument `hecate_om_identity:attach_client/0` to log
+the raw `macula:connect/2` return + reason, and/or call `macula:connect(Seeds,
+#{})` directly in a `… eval` on the bot (NOTE: use `io:format/1,2`, NOT
+`io:format(user, …)` — the latter isn't captured by the release `eval`). Compare
+against a working parksim node's connect path. The question is purely *"why does
+`macula:connect` error-without-peering for this service when an otherwise
+identical setup in parksim succeeds."*
+
+**Ops note — ghcr package is PRIVATE.** `ghcr.io/hecate-services/hecate-mpong-bot`
+is private and **cannot be flipped to public via API** (GitHub has no REST
+endpoint for package visibility — `PATCH`/`PUT` both 404; it's a UI-only toggle
+at github.com/orgs/hecate-services/packages). Until it's made public in the UI
+(or the beams `docker login ghcr`), deploy via `docker save | ssh beamNN docker
+load`. The canary on beam01 is **stopped** (`docker start mpong-bot` to resume).
 
 ---
 
