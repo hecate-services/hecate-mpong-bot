@@ -1,9 +1,13 @@
 # hecate-mpong-bot
 
-**Status: scaffolded, no game code moved yet.** This repo is a Layer-2
-service per the [Hecate four-tier model][tier-model], extracted from
-the Pong-over-mesh autonomy that currently lives inside
-`hecate-daemon`'s `guide_mpong_game_lifecycle/*`.
+**Status: Phase 1 complete — the self-hosting game now lives here, and
+hecate-daemon is mpong-free.** This repo is a Layer-2 service per the
+[Hecate four-tier model][tier-model]. The Pong-over-mesh autonomy was
+**ripped out of `hecate-daemon`** and moved here (2026-06-01): the full
+self-hosting CQRS stack (CMD/PRJ/QRY, the game engine with AI paddles,
+and the advertise/broadcast mesh emitters). Builds clean (`rebar3 compile`
++ `rebar3 as prod release`). The federated seat-negotiation path is
+deferred to Phase 2. See `HANDOVER.md` for the full extraction map.
 
 [tier-model]: https://codeberg.org/hecate-social/hecate-corpus/src/branch/main/philosophy/HECATE_TIER_MODEL.md
 
@@ -67,71 +71,52 @@ supervisor and supervises its workers directly. The service-level
 sup only owns service-wide infrastructure (HTTP listener,
 RPC dispatcher).
 
-## Status of the extraction
+## Status of the extraction — Phase 1 complete (2026-06-01)
 
-Landed:
+The full **self-hosting** game lives here now, and `hecate-daemon` is
+mpong-free. Moved + wired:
 
-* Service scaffolding — `manifest.json`, `Containerfile`,
-  `quadlet/hecate-mpong-bot.container`, `hecate_om_service`
-  callbacks, root sup with `/health` listener.
-* `apps/guide_mpong_game_lifecycle/` — umbrella app with three
-  slices verbatim from hecate-daemon:
-    - `auto_host_demo_loop/` (gen_server + sup)
-    - `advertise_game/`        (library module — `mpong/game_advertised_v1`)
-    - `broadcast_game_state/`  (library module — `mpong/state_broadcast_v1`)
+* `apps/guide_mpong_game_lifecycle/` — CMD: host/join/start/end +
+  `register_champion`, the game engine (`mpong_game_engine` + `ball` /
+  `collision` / `obstacles` / `ai` paddles), and the `advertise_game` /
+  `broadcast_game_state` mesh emitters + the `auto_host_demo_loop`.
+* `apps/project_mpong_games/` — PRJ (game + champion ETS projections).
+* `apps/query_mpong_games/` — QRY (`list` / `get` / `stream` / `champion`).
+* `src/hecate_mesh.erl` + `src/hecate_topics.erl` — thin service-local
+  shims (publish a term over the bot's macula pool; build the
+  byte-identical topics). They replace the daemon's `hecate_mesh` facade
+  and `shared/hecate_topics` — NOT lifted verbatim.
+* The game lifecycle is event-sourced into a service-local `mpong_store`,
+  created in `hecate_mpong_bot_service:start/1` (the hecate-parksim pattern:
+  `reckon_db_sup:start_store` + `evoq_store_subscription`).
 
-  The umbrella's sup conditionally starts `auto_host_demo_loop_sup`
-  when `{hecate_mpong_bot, mpong_auto_host}` or the
-  `HECATE_MPONG_AUTO_HOST` OS env is true. The `application:get_env`
-  call inside `auto_host_demo_loop` was retargeted from the
-  daemon's `hecate` app namespace to `hecate_mpong_bot` so the
-  service's `sys.config` knobs apply.
+**Deleted** (cruft, not moved): the `*_mpong_*` API duplicate family,
+`mpong_paddle`, `poll_mpong_game`.
 
-Not yet runtime-functional. The three slices reference five
-modules that haven't been extracted:
+**Deferred → Phase 2** (the real federated seat-negotiation path; rebuild
+from daemon git history, not carried over as stubs): `mpong_lobby_server` /
+`mpong_lobby_seeker`, `request_seat` / `reserve_seat` / `deny_seat`,
+`seek_lobby`, `listen_game_state`, `handle_paddle_input`, `eliminate_player`,
+`leave_game`, `mpong_arena`, `discover_mpong_lobbies`.
 
-| Module | Lives in (daemon) | Needed by |
-|---|---|---|
-| `host_game_v1`             | `host_mpong_game/`     | auto_host_demo_loop |
-| `maybe_host_game`          | `host_mpong_game/`     | auto_host_demo_loop |
-| `mpong_game_aggregate`     | `apps/guide_mpong_game_lifecycle/src/` (loose) | auto_host_demo_loop |
-| `run_game_engine_sup`      | `run_game_engine/`     | auto_host_demo_loop |
-| `hecate_mesh`              | `apps/hecate_mesh/`    | advertise_game, broadcast_game_state |
-| `hecate_topics`            | `apps/shared/`         | advertise_game, broadcast_game_state |
+**Build-verified:** `rebar3 compile` + `rebar3 as prod release` both green.
+**Runtime** needs a service-principal cert from the deployed `macula-realm`
+(`POST /api/v1/services/provision`) — see HANDOVER.md.
 
-`auto_host_demo_loop_sup` will boot successfully but the loop's
-`host_one_match/1` will crash with `undef` on the first `tick` —
-the supervisor restarts it, the next tick crashes again. Until
-the supporting modules land, the loop is effectively a noisy
-no-op. `advertise_game:announce/1` and `broadcast_game_state:broadcast/2`
-will also `undef` at the `hecate_mesh:publish/2` call.
+Wire protocol stays byte-identical, so the `macula-realm` `/demo/mpong`
+spectator is unaffected once the bot publishes.
 
-What still lives in `hecate-daemon` and needs to move:
-
-* `apps/guide_mpong_game_lifecycle/src/{run_game_engine, mpong_lobby_seeker,
-  request_seat, reserve_seat, deny_seat, handle_paddle_input,
-  host_mpong_game, join_mpong_game, listen_game_state,
-  mpong_game_aggregate, register_champion, seek_lobby, start_mpong_game,
-  end_game, eliminate_player, leave_game, open_lobby}/`
-* `apps/hecate_mesh/` (publisher facade — to be replaced by a service
-  -local thin wrapper over `macula:publish/4`)
-* `apps/shared/src/hecate_topics.erl` (topic-string builder — pure
-  function, move as-is)
-
-Wire protocol stays byte-identical so the migration can be done
-incrementally — run one bot as a service alongside the existing
-daemon-side bots, verify `/demo/mpong` sees both, then cut the
-daemon-side off.
-
-## Build (placeholder)
+## Build
 
 ```bash
-rebar3 as prod tar
+rebar3 compile
+rebar3 as prod release      # or: rebar3 as prod tar
 docker build -t ghcr.io/hecate-services/hecate-mpong-bot:dev .
 ```
 
-Won't produce a useful release until at least the auto-host slice
-lands.
+Builds a complete self-hosting release. To actually host matches at
+runtime it needs `HECATE_MPONG_AUTO_HOST=true` and a service-principal
+cert for its mesh identity (see HANDOVER.md).
 
 ## Deploy (intended)
 
