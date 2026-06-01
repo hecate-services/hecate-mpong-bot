@@ -32,9 +32,9 @@ RUN rebar3 as prod tar
 #----------------------------------------------------------------------
 # Stage 2 — runtime: slim image, just the release tarball
 #----------------------------------------------------------------------
-FROM docker.io/alpine:3.20
+FROM docker.io/alpine:3.22
 
-RUN apk add --no-cache libstdc++ ncurses-libs openssl
+RUN apk add --no-cache libstdc++ ncurses-libs openssl ca-certificates
 
 WORKDIR /app
 COPY --from=builder /build/_build/prod/rel/hecate_mpong_bot/*.tar.gz /tmp/release.tar.gz
