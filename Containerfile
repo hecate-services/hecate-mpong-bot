@@ -21,7 +21,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 ENV RUSTFLAGS="-C target-feature=-crt-static"
 
 WORKDIR /build
-COPY rebar.config ./
+COPY rebar.config rebar.lock ./
 COPY src ./src
 COPY apps ./apps
 COPY config ./config
