@@ -116,6 +116,24 @@ Steps done:
    `:latest`) — re-verified connect + publish (`tick=425 result=ok`, zero
    `mesh_unavailable`). Old beam01 image tags (`fixed-noclient` + dangling)
    pruned.
+6. **Realm-side `/demo/mpong` live arena fixed (2026-06-01) — was a STATION bug,
+   not the bot.** Two issues, both resolved:
+   - `MpongLive.lobby/1` 500'd (`BadBooleanError`) on advertised-but-not-yet-live
+     games (mixed `&&`/`and`); fixed in `macula-realm` (`mpong_live.ex:208`,
+     commit `bda8b1d`).
+   - Game stuck on "Waiting for first tick": the realm received `game_advertised`
+     but never `state_broadcast`. Root cause = **macula-station 4.7.x**:
+     `macula_record_cbor:encode/1` had no negative-integer clause and **crashed
+     (`function_clause`) while canonically re-encoding the payload to verify the
+     publisher_sig** — so any pubsub EVENT with negative ints (mpong ball
+     velocity / wall offsets) was silently dropped at the origin (the bot's seed
+     station), publisher still got `ok`. NOT rate, NOT size, NOT integer map keys
+     (those canonicalise identically across 4.7/4.8). 4.8.0 added the negative
+     clause. Fixed by bumping the **macula-station fleet** `{macula, "~> 4.7.0"}`
+     → `{macula, "~> 4.8"}` (`macula-station` commit `3c2561a`); CI built `:main`,
+     watchtower rolled 4.8.0 across the fleet. Verified: full payload (negatives)
+     now delivers, live game tick climbing, 3211 state EVENTs/60s, 0 crashes.
+     See memory `[[macula_station_negative_int_pubsub_drop]]`.
 
 ### Follow-up still owed (next session, small)
 
