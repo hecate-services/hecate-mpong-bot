@@ -109,11 +109,11 @@ Steps done:
 
 ### Follow-up still owed (next session, small)
 
-- **Dep is `{hecate_om, {branch, main}}` and `rebar.lock` is GITIGNORED.** The
-  fix rides on Codeberg `hecate_om` `main` = `c1dc348` (pushed). A fresh build
-  re-resolves `main` and gets it. For reproducibility, consider pinning
-  `{ref, "c1dc348..."}` in `rebar.config` (or `{hecate_om, "~> 0.3.1"}` once
-  0.3.1 is on hex) so a future `main` commit can't silently regress this.
+- **Dep PINNED (done):** `rebar.config` now pins `{hecate_om, {git, ..., {ref,
+  "c1dc348..."}}}` (0.3.1) — a future `hecate_om` `main` commit can't silently
+  regress the connect fix. `rebar.lock` stays gitignored; the ref pin is the
+  source of truth. Move to `{hecate_om, "~> 0.3.1"}` once 0.3.1 is published to
+  hex, then drop the git ref.
 - **Stale comments** in `config/sys.config` (the `hecate_om` block) +
   `scripts/provision-service-cert.sh` (header) still say "v1 connect/publish does
   not require the cert" — that is now TRUE (0.3.1), so the comments are fine, but
