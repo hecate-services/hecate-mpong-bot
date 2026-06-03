@@ -72,21 +72,31 @@ term (never pre-JSON). Negative ints are safe on the 4.8 station fleet.
 ?ENDED      16    % concluded; re-advertise spawns a NEW game_id
 ```
 
-**Commands → events (host, event-sourced):**
+**REVISED 2026-06-03 (design study).** The existing aggregate already
+models the lifecycle with bit flags `?MPONG_HOSTED|STARTED|ENDED|CANCELLED`
+and the commands `host_game` / `join_game` / `start_game` / `end_game`
+(+ `register_champion`). Seat negotiation maps onto these directly — **no
+new aggregate commands are needed**:
 
-| Command | Event | Transition |
+| Plan concept | Existing command | Notes |
 |---|---|---|
-| `host_open_game_v1` | `open_game_hosted_v1` | → ADVERTISED |
-| `reserve_seat_v1` | `seat_reserved_v1` | ADVERTISED → SEATED |
-| `deny_seat_v1` | `seat_denied_v1` | (no transition; loser re-seeks) |
-| `start_game_v1` | `game_started_v1` | SEATED → RUNNING |
-| `pause_game_v1` | `game_paused_v1` | RUNNING → PAUSED |
-| `resume_game_v1` | `game_resumed_v1` | PAUSED → RUNNING |
-| `end_game_v1` | `game_ended_v1` | * → ENDED |
-| `withdraw_game_v1` | `game_withdrawn_v1` | ADVERTISED → ENDED |
+| host an open game | `host_game` (max_players=2) | emits `game_hosted_v1` |
+| reserve a seat | `join_game` | adds challenger at next wall → `player_joined_v1`; aggregate guards (`game_full`, `game_already_started`, `already_joined`) ARE the deny conditions |
+| deny a seat | `join_game` returning `{error, …}` | the seat PM emits `seat_denied` on that error |
+| start | `start_game` | aggregate already requires ≥2 players + requester=host → `game_started_v1` |
+| end | `end_game` | exists → `game_ended_v1` |
 
-Scoring stays event-sourced (`point_scored_v1`). **Paddle positions are
-NOT events** — `update_paddle/3` casts straight into the engine process.
+So the **only new work is the integration layer**, not the domain:
+- emitters: `seat_reserved`, `seat_denied` mesh facts (`game_advertised`,
+  `state_broadcast` already exist via `advertise_game` / `broadcast_game_state`).
+- the host seat PM (below).
+- launching the engine for a mesh game (remote wall) when `start_game` succeeds.
+
+Pause/resume is currently an **engine-level** concern (`pause/1`/`resume/1`,
+phase 2) driven by the churn watchdog; promoting it to event-sourced
+`game_paused_v1`/`game_resumed_v1` is optional and deferred unless the
+read model needs it. **Paddle positions are NOT events** — `update_paddle/3`
+casts straight into the engine process.
 
 **Challenger** holds no game aggregate. It is an integration actor:
 discover → request seat → on reservation, run a paddle-AI loop that reads the
@@ -144,15 +154,13 @@ emitters/listeners are **sibling slices** in the same CMD app (own dir, own
 `_sup`, own gen_server), not nested in the desks they trigger.
 
 ### Host desks
-- `advertise_game/` *(modify)* — advertise an **open** game (1 local paddle,
-  open wall 1); reannounce heartbeat.
-- `reserve_seat/` *(new)* — `maybe_reserve_seat`: first request → reserve +
-  start; subsequent → deny.
-- `run_game_engine/` *(modify)* — start with `player_modes => #{0 => {bot,_},
-  1 => remote}`; honour `update_paddle/3` for wall 1; pause/resume; staleness
-  watchdog (no `paddle_moved` for `STALE_MS` → `pause_game`, grace → `end_game`).
+- `advertise_game/` *(exists)* — already has `announce/closed/ended/withdraw`.
+- `host_game/` + `join_game/` + `start_game/` *(exist, reused)* — the domain
+  seat mechanism (see §4 revision). No new commands.
+- `run_game_engine/` *(phase 2 done)* — remote wall + `pause/1`/`resume/1`
+  landed. Still TODO: launch a mesh game with `player_modes => #{0 =>
+  {bot,_}, 1 => remote}` and the challenger node registered at wall 1.
 - `broadcast_game_state/` *(exists)* — unchanged.
-- `withdraw_game/` *(new)* — `game_withdrawn` when a seeker/host abandons its ad.
 
 ### Challenger desks
 - `discover_games/` *(new)* — the role state machine (§5): subscribe
@@ -220,6 +228,22 @@ hecate_om hex release is needed**.
   free — no topic teardown).
 
 ---
+
+## 8a. Test harness gap (discovered 2026-06-03)
+
+There is **no store-backed test harness in this repo** — the aggregate and
+handlers currently have zero eunit; `mpong_store` is only booted at app
+start via `reckon_db_sup:start_store`. Phases 3–4 dispatch real commands
+through `evoq_dispatcher` into `mpong_store`, so verifying them needs a
+test setup that starts `reckon_db` + the store (the corpus `test_store_proxy`
+pattern is not present here). **Building this harness is a prerequisite for
+phases 3–4** and should be the first sub-step of phase 3.
+
+Phases 3 (host seat PM) and 4 (challenger + role coordinator) are also
+**coupled**: a meaningful host-side test needs a challenger to drive it, and
+the engine launch needs the full host setup (host_game + own-bot join +
+remote join → start). Build them as one focused "mesh play" unit on top of
+the store harness, not as isolated half-states.
 
 ## 9. Build phases (ordered, each independently testable)
 
