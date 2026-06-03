@@ -1,8 +1,12 @@
 # PLAN: Pong Over Mesh
 
-**Status:** Active — design locked 2026-06-03
+**Status:** ✅ DONE — phases 1–7 shipped + live on the 4-beam fleet (2026-06-03).
 **Repo:** `hecate-services/hecate-mpong-bot`
 **Supersedes:** the `auto_host_demo_loop` self-hosted local-game model.
+
+**Live:** two concurrent cross-node 1v1 games on beam00–03, all coordination
+over the Macula mesh, visible on `/demo/mpong`. 24 eunit green. Latest on
+Codeberg `main`: `6ba4e18`.
 
 ---
 
@@ -245,26 +249,43 @@ the engine launch needs the full host setup (host_game + own-bot join +
 remote join → start). Build them as one focused "mesh play" unit on top of
 the store harness, not as isolated half-states.
 
-## 9. Build phases (ordered, each independently testable)
+## 9. Build phases (all complete)
 
-1. **Mesh subscribe primitive.** `hecate_mesh:subscribe/2` + subscription
-   manager + re-subscribe on pool change. Test: subscribe to a topic, publish
-   from a second node, assert delivery. *Unblocks everything.*
-2. **Engine remote wall.** Wire `update_paddle/3` into the tick loop for a
-   `remote` wall; `player_modes => #{1 => remote}`; pause/resume. Test
-   locally: feed synthetic paddle casts, assert wall 1 tracks; assert pause
-   freezes ball.
-3. **Seat negotiation (host).** `host_open_game`, `reserve_seat`/`deny_seat`,
-   `start_game`; emitters + `on_seat_requested_from_mesh_reserve_seat`. Test:
-   two synthetic `seat_requested` → one reserved, one denied.
-4. **Challenger side.** `discover_games` role SM, `request_seat`,
-   `play_remote_paddle` (AI from `state_broadcast` → `paddle_moved`).
-5. **Wire it end-to-end** two nodes: host advertises, challenger joins, ball
-   starts, wall 1 tracks remote paddle, realm spectates.
-6. **Churn.** Staleness watchdog → pause → resume/end; re-advertise; verify
-   self-re-pairing after a node bounce.
-7. **Fleet.** Deploy to 4 beams (one bot/node), confirm ~2 emergent 1v1 games,
-   each spanning two nodes, visible on `/demo/mpong`.
+1. ✅ **Mesh subscribe primitive.** `hecate_mesh:subscribe/2` (pid mailbox or
+   1-arg callback) + `unsubscribe/1`, delegating to the SDK. Per-slice
+   re-subscribe on pool churn (no central manager). Commit `2369afc`.
+2. ✅ **Engine remote wall.** `update_paddle/3` was already plumbed (run_ai
+   skips `remote` walls); added `pause/1`/`resume/1` churn-suspend +
+   `get_game_info` snapshot. eunit: wall 1 holds external position, suspend
+   freezes ball past the countdown. Commit `d64706b`.
+3. ✅ **Seat negotiation (host).** REUSED `host_game`/`join_game`/`start_game`
+   (no new aggregate commands — join errors are the deny conditions). New:
+   `mpong_match_facts` contract, `reserve_seat` emitter, host orchestration
+   in `discover_games`. Commit `fd24d74`.
+4. ✅ **Challenger side.** `discover_games` role SM (jittered seek, host-xor-
+   challenger), `request_seat`, `play_remote_paddle` (AI from `state_broadcast`
+   → `paddle_moved`). Commit `fd24d74`.
+5. ✅ **End-to-end two-node (live).** beam00 hosts, beam01 joins over mesh,
+   engine `…@beam00(bot) vs …@beam01(remote)`, wall 1 tracked across the mesh
+   (497→500→509). Verified on the live fleet.
+6. ✅ **Churn (built + live).** Host watchdog: stale remote paddle → pause
+   (~3s) → grace (~10s) → end + re-advertise; resume on return. Pure
+   `churn_action/3` unit-tested; verified live (stop challenger → paused →
+   ended → re-advertised). Commit `20f3b26`.
+   - ✅ **Matchmaking robustness** (found in live re-pair): two bots could both
+     host and deadlock. Fixed with 2s reannounce + jittered host/challenge
+     give-up timers. Verified: fleet self-healed a real double-host live.
+     Commit `6ba4e18`.
+7. ✅ **Fleet.** All four beams (one bot/node, distinct stations). Self-
+   organized into 2 concurrent cross-node 1v1 games (beam01↔beam00,
+   beam03↔beam02); the give-up timers resolved an actual double-host with no
+   intervention. Both games actively playing, on `/demo/mpong`.
+
+## Deferred (not needed for the demo)
+
+- Event-sourced `game_paused_v1`/`game_resumed_v1` — engine-level pause sufficed.
+- N-wall free-for-all — schemas already carry `wall_index`.
+- Per-game mesh topics — only worthwhile at much larger concurrent-game counts.
 
 ---
 
