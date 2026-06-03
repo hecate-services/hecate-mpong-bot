@@ -27,10 +27,19 @@
 
 -define(SEEK_BASE_MS, 3000).
 -define(SEEK_JITTER_MS, 3000).
--define(REANNOUNCE_MS, 10000).
+%% Reannounce MUST be shorter than the minimum seek window, so any
+%% seeker is guaranteed to hear an existing host at least once.
+-define(REANNOUNCE_MS, 2000).
 -define(RESUB_MS, 1000).
 -define(MAX_PLAYERS, 2).
 -define(REMOTE_WALL, 1).
+%% Matchmaking give-up timers (jittered to desync peers). A host with no
+%% challenger re-seeks (breaks the two-hosts deadlock); a challenger
+%% whose request goes unanswered re-seeks. Without these, simultaneous
+%% or async-restarted bots can both host and never pair.
+-define(HOST_WAIT_BASE_MS, 6000).
+-define(HOST_WAIT_JITTER_MS, 6000).
+-define(CHALLENGE_WAIT_MS, 5000).
 %% Churn watchdog: the host pauses when the remote paddle goes silent,
 %% then ends the game if it stays silent past the grace window.
 -define(WATCHDOG_MS, 1000).   %% how often the host checks paddle freshness
@@ -100,6 +109,22 @@ handle_info(reannounce, #st{role = hosting, game_id = GId, node_id = Me} = St) -
     schedule(reannounce, ?REANNOUNCE_MS),
     {noreply, St};
 handle_info(reannounce, St) ->
+    {noreply, St};
+
+%% Host got no challenger in time → give up the seat and re-seek, so two
+%% bots that both started hosting can pair (one drops, hears the other).
+handle_info(host_timeout, #st{role = hosting, game_id = GId} = St) ->
+    catch advertise_game:withdraw(GId),
+    logger:info("[discover_games] ~s withdrawing ~s — no challenger, re-seeking",
+                [St#st.node_id, GId]),
+    {noreply, reseek(St)};
+handle_info(host_timeout, St) ->
+    {noreply, St};
+
+%% Challenger's seat request went unanswered → re-seek.
+handle_info(challenge_timeout, #st{role = challenging} = St) ->
+    {noreply, reseek(St)};
+handle_info(challenge_timeout, St) ->
     {noreply, St};
 
 %% Host churn watchdog: pause when the remote paddle goes silent, end
@@ -287,11 +312,13 @@ become_host(#st{node_id = Me} = St) ->
     advertise_game:announce(#{game_id => GId, host_node_id => Me,
                               max_players => ?MAX_PLAYERS}),
     schedule(reannounce, ?REANNOUNCE_MS),
+    schedule(host_timeout, ?HOST_WAIT_BASE_MS + rand:uniform(?HOST_WAIT_JITTER_MS)),
     logger:info("[discover_games] ~s hosting open game ~s", [Me, GId]),
     St#st{role = hosting, game_id = GId, heard = []}.
 
 become_challenger(GId, #st{node_id = Me} = St) ->
     request_seat:publish(GId, Me, ?REMOTE_WALL),
+    schedule(challenge_timeout, ?CHALLENGE_WAIT_MS),
     logger:info("[discover_games] ~s requesting a seat in ~s", [Me, GId]),
     St#st{role = challenging, target = GId, heard = []}.
 
