@@ -23,8 +23,17 @@
     game_id :: binary(),
     wall    :: non_neg_integer(),
     y = 500 :: integer(),
-    sub_ref :: reference() | undefined
+    sub_ref :: reference() | undefined,
+    ball    :: map() | undefined,        %% last ball seen (from 5Hz state_broadcast)
+    last_tick = 0 :: non_neg_integer()   %% last host tick observed
 }).
+
+%% Local paddle loop rate — matches the engine (25Hz). The host only
+%% broadcasts state at ~5Hz, but we step + publish our paddle toward the
+%% last-known ball at the FULL engine rate, so the remote wall moves as
+%% fast as a local one (it just reacts a mesh-hop later). Driving the
+%% paddle off the 5Hz broadcast arrival is what made it ~5x too slow.
+-define(TICK_MS, 40).
 
 -spec start_link(binary(), non_neg_integer()) -> {ok, pid()}.
 start_link(GameId, WallIndex) ->
@@ -35,6 +44,7 @@ stop(Pid) -> gen_server:stop(Pid).
 
 init({GameId, WallIndex}) ->
     self() ! subscribe,
+    erlang:send_after(?TICK_MS, self(), tick),
     logger:info("[play_remote_paddle] joined ~s as wall ~b", [GameId, WallIndex]),
     {ok, #st{game_id = GameId, wall = WallIndex}}.
 
@@ -45,17 +55,26 @@ handle_info(subscribe, St) ->
             erlang:send_after(?RESUB_MS, self(), subscribe),
             {noreply, St}
     end;
+%% Inbound state (≈5Hz): just cache the authoritative ball + tick. The
+%% paddle is moved + published by the local tick loop, not here.
 handle_info({macula_event, Ref, _Topic, Payload, _Meta},
-            #st{sub_ref = Ref, game_id = GId, wall = Wall, y = Y0} = St) ->
+            #st{sub_ref = Ref, game_id = GId} = St) ->
     case ball_for_game(Payload, GId) of
-        {ok, Ball, Tick} ->
-            Y1 = mpong_ai:compute_paddle_position(Ball, Y0, Wall),
-            hecate_mesh:publish(mpong_match_facts:topic_paddle_moved(),
-                                mpong_match_facts:paddle_moved(GId, Wall, Y1, Tick)),
-            {noreply, St#st{y = Y1}};
-        ignore ->
-            {noreply, St}
+        {ok, Ball, Tick} -> {noreply, St#st{ball = Ball, last_tick = Tick}};
+        ignore           -> {noreply, St}
     end;
+%% Local 25Hz loop: step toward the last-known ball and publish, so the
+%% remote wall moves at the engine rate (not the 5Hz broadcast rate).
+handle_info(tick, #st{ball = undefined} = St) ->
+    erlang:send_after(?TICK_MS, self(), tick),
+    {noreply, St};
+handle_info(tick, #st{game_id = GId, wall = Wall, y = Y0,
+                      ball = Ball, last_tick = Tick} = St) ->
+    Y1 = mpong_ai:compute_paddle_position(Ball, Y0, Wall),
+    hecate_mesh:publish(mpong_match_facts:topic_paddle_moved(),
+                        mpong_match_facts:paddle_moved(GId, Wall, Y1, Tick)),
+    erlang:send_after(?TICK_MS, self(), tick),
+    {noreply, St#st{y = Y1}};
 handle_info({macula_event_gone, Ref, _Reason}, #st{sub_ref = Ref} = St) ->
     self() ! subscribe,
     {noreply, St#st{sub_ref = undefined}};

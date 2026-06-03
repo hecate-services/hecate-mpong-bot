@@ -103,7 +103,11 @@ handle_info(seek_deadline, #st{role = seeking, heard = Heard, node_id = Me} = St
 handle_info(seek_deadline, St) ->
     {noreply, St};
 
-handle_info(reannounce, #st{role = hosting, game_id = GId, node_id = Me} = St) ->
+%% Keep the lobby tile alive both while OPEN (so seekers find us) and
+%% while PLAYING (so a restarted spectator/realm re-discovers an
+%% in-progress game — the cache shows it LIVE via fresh state).
+handle_info(reannounce, #st{role = R, game_id = GId, node_id = Me} = St)
+  when (R =:= hosting orelse R =:= playing_host), is_binary(GId) ->
     advertise_game:announce(#{game_id => GId, host_node_id => Me,
                               max_players => ?MAX_PLAYERS}),
     schedule(reannounce, ?REANNOUNCE_MS),
