@@ -21,19 +21,20 @@ init([]) ->
           restart => permanent,
           type => supervisor}
     ],
-    Children = Base ++ auto_host_demo_loop_children(),
+    Children = Base ++ discover_games_children(),
     {ok, {SupFlags, Children}}.
 
-%% Only run the public-demo auto-host loop when explicitly enabled via
-%% application env (`{hecate, mpong_auto_host}') OR the OS env
-%% `HECATE_MPONG_AUTO_HOST=true' (set in `~/.hecate/gitops/system/
-%% hecate-daemon.env' on beam-cluster boxes designated for the demo).
-%% Default off — user-installed daemons must never spam mpong matches.
-auto_host_demo_loop_children() ->
+%% Only run the matchmaking coordinator when explicitly enabled via
+%% application env (`{hecate_mpong_bot, mpong_auto_host}') OR the OS env
+%% `HECATE_MPONG_AUTO_HOST=true' (set per node on beam-cluster boxes
+%% designated for the demo). Default off — user-installed daemons must
+%% never spam mpong matches. Replaces the retired self-hosting
+%% auto_host_demo_loop with the pong-over-mesh discover_games coordinator.
+discover_games_children() ->
     case auto_host_enabled() of
         true ->
-            [#{id => auto_host_demo_loop_sup,
-               start => {auto_host_demo_loop_sup, start_link, []},
+            [#{id => discover_games_sup,
+               start => {discover_games_sup, start_link, []},
                restart => permanent,
                type => supervisor}];
         _ ->

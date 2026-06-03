@@ -44,7 +44,10 @@ ssh_node() { ssh -o ConnectTimeout=5 "${USER}@${1}.lab" "$2"; }
 
 build() {
     echo "[build] ${IMAGE} from Containerfile"
-    docker build -f "${REPO_ROOT}/Containerfile" -t "${IMAGE}" "${REPO_ROOT}"
+    # --load: with a buildx docker-container driver, a bare build leaves the
+    # result in the build cache only (not the local image store), so the
+    # subsequent `docker save` would ship a stale image. --load imports it.
+    docker build --load -f "${REPO_ROOT}/Containerfile" -t "${IMAGE}" "${REPO_ROOT}"
 }
 
 load_one() {
