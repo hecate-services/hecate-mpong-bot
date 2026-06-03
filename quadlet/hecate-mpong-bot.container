@@ -9,17 +9,28 @@
 #
 # One container per bot IDENTITY — multiple containers on the same
 # host yield multiple distinct paddles available across the mesh.
+#
+# STATION SEEDING: the bot is an outbound client that dials a REMOTE
+# station over QUIC (it does not use a local macula-station socket). To
+# make each deployed instance enter the mesh through a DIFFERENT station,
+# drop a per-node station.env next to this unit's secrets dir setting
+# MACULA_STATION_SEEDS to a single station URL. That env var overrides
+# the sys.config fallback (see quadlet/station.env.example). Absent the
+# file, the bot falls back to the baked Leuven district seed set.
 
 [Unit]
 Description=Hecate service: hecate-mpong-bot
-After=network-online.target macula-station.service
+After=network-online.target
 Wants=network-online.target
-Requires=macula-station.service
 
 [Container]
 ContainerName=hecate-mpong-bot
 Image=ghcr.io/hecate-services/hecate-mpong-bot:latest
 AutoUpdate=registry
+
+# Per-node station selection: MACULA_STATION_SEEDS=<one station URL>.
+# Optional (leading `-`): absent → sys.config fallback seed set.
+EnvironmentFile=-/etc/hecate/secrets/hecate-mpong-bot/station.env
 
 # Realm-issued service-principal cert (read-only). Provisioned via
 # hecate-realm at install time, not derived from a human user.
@@ -28,9 +39,6 @@ Volume=/etc/hecate/secrets/hecate-mpong-bot:/etc/hecate/secrets:ro,Z
 # Per-bot state (currently only the in-memory engine + future event
 # store for match history). Bulk drive on the beam nodes (/bulk0).
 Volume=/bulk0/hecate/hecate-mpong-bot:/var/lib/hecate-mpong-bot:Z
-
-# Local macula-station socket (the SDK speaks to this).
-Volume=/run/macula:/run/macula:Z
 
 # No exposed ports — /health is on loopback inside the container,
 # Podman's HEALTHCHECK reaches it via the container's own network.
