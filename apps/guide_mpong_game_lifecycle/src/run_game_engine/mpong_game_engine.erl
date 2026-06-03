@@ -10,7 +10,7 @@
 
 -export([start_link/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
--export([update_paddle/3]).
+-export([update_paddle/3, pause/1, resume/1]).
 
 -define(TICK_HZ, 25).
 -define(TICK_MS, 1000 div ?TICK_HZ).
@@ -35,6 +35,7 @@
     %% State
     tick       :: non_neg_integer(),
     paused_until :: non_neg_integer(),        %% tick at which play resumes (point pause)
+    suspended  :: boolean(),                  %% indefinite churn-pause (remote paddle stale)
     timer      :: reference() | undefined
 }).
 
@@ -47,6 +48,14 @@ start_link(GameConfig) ->
 
 update_paddle(Pid, NodeId, Position) ->
     gen_server:cast(Pid, {paddle, NodeId, round(Position)}).
+
+%% @doc Indefinitely suspend the game (ball + paddles freeze, match
+%% clock stops). Used when a remote paddle goes stale on the mesh.
+%% Idempotent; resume with `resume/1'.
+pause(Pid) -> gen_server:cast(Pid, suspend).
+
+%% @doc Resume a suspended game. Idempotent.
+resume(Pid) -> gen_server:cast(Pid, resume).
 
 %%====================================================================
 %% gen_server
@@ -102,13 +111,18 @@ init(#{game_id := GameId, players := Players} = Config) ->
         total_pts = 0,
         tick = 0,
         paused_until = ?COUNTDOWN_TICKS,
+        suspended = false,
         timer = Timer
     }}.
 
 handle_call(get_game_info, _From, #engine{game_id = GId, players = P,
-                                           player_modes = PM, alive = Al} = State) ->
+                                           player_modes = PM, alive = Al,
+                                           ball = Ball, paddles = Paddles,
+                                           suspended = Suspended} = State) ->
     Info = #{game_id => GId, player_count => maps:size(P),
-             player_modes => PM, alive => Al},
+             player_modes => PM, alive => Al,
+             ball => mpong_ball:to_map(Ball), paddles => Paddles,
+             suspended => Suspended},
     {reply, Info, State};
 handle_call(_Req, _From, State) -> {reply, ok, State}.
 
@@ -117,7 +131,16 @@ handle_cast({paddle, NodeId, Position}, #engine{players = Players, paddles = Pad
         {ok, WI} -> {noreply, State#engine{paddles = Paddles#{WI => Position}}};
         error -> {noreply, State}
     end;
+handle_cast(suspend, State) -> {noreply, State#engine{suspended = true}};
+handle_cast(resume, State)  -> {noreply, State#engine{suspended = false}};
 handle_cast(_, State) -> {noreply, State}.
+
+handle_info(tick, #engine{tick = Tick, suspended = true} = State) ->
+    %% Churn-suspended: freeze ball + paddles, stop the match clock.
+    %% Keep broadcasting the frozen frame and ticking so resume is seamless.
+    broadcast(State),
+    Timer = erlang:send_after(?TICK_MS, self(), tick),
+    {noreply, State#engine{tick = Tick + 1, timer = Timer}};
 
 handle_info(tick, #engine{tick = Tick, paused_until = PausedUntil} = State0) ->
     %% Always run AI and broadcast
@@ -271,7 +294,8 @@ check_match_over(#engine{games_won = GW}) ->
 broadcast(#engine{game_id = GameId, ball = Ball, paddles = Paddles,
                   alive = Alive, points = Points, games_won = GW,
                   serving = Serving, obstacles = Obs,
-                  tick = Tick, paused_until = PausedUntil}) ->
+                  tick = Tick, paused_until = PausedUntil,
+                  suspended = Suspended}) ->
     StateMsg = #{
         game_id => GameId,
         ball => mpong_ball:to_map(Ball),
@@ -281,7 +305,7 @@ broadcast(#engine{game_id = GameId, ball = Ball, paddles = Paddles,
         games_won => GW,
         serving => Serving,
         obstacles => mpong_obstacles:to_list(Obs),
-        paused => Tick < PausedUntil,
+        paused => Suspended orelse Tick < PausedUntil,
         tick => Tick,
         arena => #{w => 1000, h => 1000}
     },
