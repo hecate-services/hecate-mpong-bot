@@ -70,3 +70,21 @@ lowest_game_id_wins_test() ->
 
 ad(Action, Host, GameId) ->
     #{action => Action, host_node_id => Host, game_id => GameId, max_players => 2}.
+
+%%====================================================================
+%% Churn watchdog decision (STALE_MS=3000, GRACE_MS=10000)
+%%====================================================================
+
+fresh_paddle_is_ok_test() ->
+    ?assertEqual(ok, discover_games:churn_action(1000, undefined, 1000)),
+    ?assertEqual(ok, discover_games:churn_action(0, undefined, 2999)).
+
+just_stale_pauses_test() ->
+    ?assertEqual(pause, discover_games:churn_action(0, undefined, 3001)).
+
+paused_within_grace_waits_test() ->
+    %% stale (8000>3000) but only paused 3000ms ago (<=10000) -> hold
+    ?assertEqual(ok, discover_games:churn_action(0, 5000, 8000)).
+
+paused_past_grace_ends_test() ->
+    ?assertEqual(end_stale, discover_games:churn_action(0, 0, 14000)).

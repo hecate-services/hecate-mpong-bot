@@ -22,7 +22,7 @@
 
 -include_lib("evoq/include/evoq.hrl").
 
--export([start_link/0, decide_role/2]).
+-export([start_link/0, decide_role/2, churn_action/3]).
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3, terminate/2]).
 
 -define(SEEK_BASE_MS, 3000).
@@ -31,6 +31,11 @@
 -define(RESUB_MS, 1000).
 -define(MAX_PLAYERS, 2).
 -define(REMOTE_WALL, 1).
+%% Churn watchdog: the host pauses when the remote paddle goes silent,
+%% then ends the game if it stays silent past the grace window.
+-define(WATCHDOG_MS, 1000).   %% how often the host checks paddle freshness
+-define(STALE_MS, 3000).      %% no paddle_moved for this long => pause
+-define(GRACE_MS, 10000).     %% paused this long with no return => end
 
 -record(st, {
     node_id    :: binary(),
@@ -41,6 +46,8 @@
     engine_pid :: pid() | undefined,      %% host
     engine_mon :: reference() | undefined,
     paddle_pid :: pid() | undefined,      %% challenger
+    last_paddle_ms :: integer() | undefined,  %% host: last paddle_moved arrival
+    paused_since   :: integer() | undefined,  %% host: when we churn-paused (undefined = running)
     heard = [] :: [map()],                %% SEEKING: open ads collected
     subs  = #{} :: #{binary() => reference()}
 }).
@@ -93,6 +100,28 @@ handle_info(reannounce, #st{role = hosting, game_id = GId, node_id = Me} = St) -
     schedule(reannounce, ?REANNOUNCE_MS),
     {noreply, St};
 handle_info(reannounce, St) ->
+    {noreply, St};
+
+%% Host churn watchdog: pause when the remote paddle goes silent, end
+%% the game if it stays silent past the grace window.
+handle_info(paddle_watchdog, #st{role = playing_host, engine_pid = Pid,
+                                 last_paddle_ms = Last, paused_since = Since} = St) ->
+    case churn_action(Last, Since, now_ms()) of
+        ok ->
+            schedule(paddle_watchdog, ?WATCHDOG_MS),
+            {noreply, St};
+        pause ->
+            mpong_game_engine:pause(Pid),
+            logger:info("[discover_games] ~s paused ~s — remote paddle stale",
+                        [St#st.node_id, St#st.game_id]),
+            schedule(paddle_watchdog, ?WATCHDOG_MS),
+            {noreply, St#st{paused_since = now_ms()}};
+        end_stale ->
+            logger:info("[discover_games] ~s ending ~s — challenger abandoned",
+                        [St#st.node_id, St#st.game_id]),
+            {noreply, abandon_game(St)}   %% engine DOWN -> reseek; no reschedule
+    end;
+handle_info(paddle_watchdog, St) ->
     {noreply, St};
 
 %% Mesh facts. Route by topic; the role/game guards do the filtering.
@@ -228,10 +257,19 @@ on_seat_denied(_Den, St) ->
 %% HOST: feed the remote challenger's paddle into our engine.
 on_paddle_moved(#{game_id := GId, y := Y},
                 #st{role = playing_host, game_id = GId,
-                    engine_pid = Pid, challenger = Ch} = St)
+                    engine_pid = Pid, challenger = Ch, paused_since = Since} = St)
   when is_pid(Pid), is_integer(Y), is_binary(Ch) ->
     mpong_game_engine:update_paddle(Pid, Ch, Y),
-    St;
+    %% Fresh input: record it and, if we were churn-paused, resume.
+    St1 = case Since of
+        undefined -> St;
+        _ ->
+            mpong_game_engine:resume(Pid),
+            logger:info("[discover_games] ~s resumed ~s — remote paddle returned",
+                        [St#st.node_id, GId]),
+            St#st{paused_since = undefined}
+    end,
+    St1#st{last_paddle_ms = now_ms()};
 on_paddle_moved(_Pad, St) ->
     St.
 
@@ -268,9 +306,11 @@ start_and_launch(Ch, #st{game_id = GId, node_id = Me} = St) ->
                        player_modes => #{0 => {bot, #{}}, ?REMOTE_WALL => remote}},
             {ok, EnginePid} = run_game_engine_sup:start_engine(Config),
             Mon = erlang:monitor(process, EnginePid),
+            schedule(paddle_watchdog, ?WATCHDOG_MS),
             logger:info("[discover_games] ~s started mesh game ~s vs ~s", [Me, GId, Ch]),
             St#st{role = playing_host, challenger = Ch,
-                  engine_pid = EnginePid, engine_mon = Mon};
+                  engine_pid = EnginePid, engine_mon = Mon,
+                  last_paddle_ms = now_ms(), paused_since = undefined};
         {error, _Reason} ->
             St
     end.
@@ -283,9 +323,36 @@ reseek(#st{paddle_pid = PPid} = St) ->
     end,
     St1 = St#st{role = seeking, game_id = undefined, challenger = undefined,
                 target = undefined, engine_pid = undefined, engine_mon = undefined,
-                paddle_pid = undefined, heard = []},
+                paddle_pid = undefined, last_paddle_ms = undefined,
+                paused_since = undefined, heard = []},
     schedule(seek_deadline, ?SEEK_BASE_MS + rand:uniform(?SEEK_JITTER_MS)),
     St1.
+
+%% Pure churn decision (exported for tests). Given the last paddle_moved
+%% arrival, when we churn-paused (or undefined if running), and now:
+%%   ok        — input is fresh, or we're paused but still within grace
+%%   pause     — input just went stale; suspend the engine
+%%   end_stale — paused past the grace window; abandon the game
+-spec churn_action(integer(), integer() | undefined, integer()) ->
+    ok | pause | end_stale.
+churn_action(LastMs, PausedSince, Now) ->
+    case Now - LastMs > ?STALE_MS of
+        false -> ok;
+        true ->
+            case PausedSince of
+                undefined                              -> pause;
+                Since when Now - Since > ?GRACE_MS     -> end_stale;
+                _                                      -> ok
+            end
+    end.
+
+%% Best-effort: record the end, stop the engine. The engine 'DOWN'
+%% handler then advertises the game ended and re-seeks.
+abandon_game(#st{game_id = GId, node_id = Me, engine_pid = Pid} = St) ->
+    catch dispatch(end_game, GId, #{winner_node_id => Me,
+                                    reason => <<"challenger_abandoned">>}),
+    catch run_game_engine_sup:stop_engine(Pid),
+    St.
 
 %%====================================================================
 %% Helpers
@@ -313,3 +380,5 @@ wall_or_default(W) when is_integer(W) -> W;
 wall_or_default(_)                    -> ?REMOTE_WALL.
 
 schedule(Msg, Ms) -> erlang:send_after(Ms, self(), Msg).
+
+now_ms() -> erlang:system_time(millisecond).
